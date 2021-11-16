@@ -2333,84 +2333,118 @@ public:
     Location loc = op.getLoc();
     Value input = adaptor.self();
     auto inputType = input.getType().cast<RankedTensorType>();
+    Type inEType = inputType.getElementType();
     int64_t inputRank = inputType.getRank();
     TypeConverter *typeConverter = getTypeConverter();
     auto resultType =
         typeConverter->convertType(op.getType()).cast<RankedTensorType>();
     int64_t resultRank = resultType.getRank();
-    // When we only have expansion of dimensions in `aten.View`, the output
-    // tensor rank will be strictly greater than the input tensor rank.
-    // TODO: Handle the cases of `aten.View` op where,
-    // 1. One or multiple dimensions are collapsed.
-    // 2. Few dimensions are expanded and few other dimensions are collapsed.
-    if (inputRank >= resultRank) {
+
+    SmallVector<Value> newShape, inShape;
+    Value one = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getIntegerAttr(rewriter.getIndexType(), 1));
+    if (!getListConstructElements(adaptor.size(), newShape))
       return rewriter.notifyMatchFailure(
-          op, "unimplemented: operand tensor rank should be strictly less than "
-              "the desired output rank");
+          op, "unimplemented: the size list is not from list construct");
+    newShape =
+        getTypeConvertedValues(rewriter, loc, getTypeConverter(), newShape);
+    for (auto i = 0; i < inputRank; i++)
+      inShape.push_back(getDimOp(rewriter, loc, input, i));
+
+    // Assert at most one dimension is < 0
+    Value zero = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getZeroAttr(rewriter.getIndexType()));
+    Value negativeCount = zero;
+    SmallVector<Value> dims;
+    for (auto unclampedDim : newShape) {
+      unclampedDim = castIntToIndex(rewriter, loc, unclampedDim);
+      Value isNegative = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::slt, unclampedDim, zero);
+      negativeCount = rewriter.create<arith::AddIOp>(
+          loc, negativeCount,
+          rewriter.create<SelectOp>(loc, isNegative, one, zero));
+      dims.push_back(unclampedDim);
     }
 
-    // Extract the desired output size as a list of integers. This list should
-    // have been created using the operation `torch.prim.ListConstruct`.
-    SmallVector<Value> expectedSizeTorchInt;
-    if (!getListConstructElements(op.size(), expectedSizeTorchInt)) {
-      return rewriter.notifyMatchFailure(op,
-                                         "unimplemented: the desired size is "
-                                         "not constructed from ListConstruct");
-    }
-    SmallVector<Value> expectedSize = getTypeConvertedValues(
-        rewriter, loc, typeConverter, expectedSizeTorchInt);
-    if (resultRank != (int64_t)expectedSize.size()) {
-      return rewriter.notifyMatchFailure(
-          op, "desired size list length mismatches with the result type rank");
+    Value validCount = rewriter.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::sle, negativeCount, one);
+    rewriter.create<AssertOp>(
+        loc, validCount,
+        rewriter.getStringAttr("only a single inferred dimension supported"));
+
+    // Assert total element count is divisible by each expanded dim one by one
+    // (ignoring the potential -1 dim)
+    Value remainder = one;
+    for (auto i = 0; i < inputRank; i++)
+      remainder = rewriter.create<arith::MulIOp>(
+          loc, remainder, getDimOp(rewriter, loc, input, i));
+    Value eleCount = (inputRank == 0 ? zero : remainder);
+    for (size_t i = 0; i < dims.size(); i++) {
+      Value isNegative = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::slt, dims[i], zero);
+      Value dim = rewriter.create<SelectOp>(loc, isNegative, one, dims[i]);
+      Value quotient =
+          rewriter.create<arith::FloorDivSIOp>(loc, remainder, dim);
+      Value divisible = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::eq,
+          rewriter.create<arith::RemSIOp>(loc, remainder, dim), zero);
+      rewriter.create<AssertOp>(
+          loc, divisible,
+          rewriter.getStringAttr(
+              "invalid view shape - wrong number of elements"));
+      remainder = quotient;
     }
 
-    // Check if the `aten.View` can be legalized to `linalg.TensorExpandShape`.
-    // It only handles the case of static dimension expansion. If the dimension
-    // is dynamic, it must not be expanded/splitted.
-    // TODO: Handle the case of dynamic dimension expansion.
-    SmallVector<ReassociationIndices> reassociation(inputRank);
-    SmallVector<int64_t> resultShape;
-    int64_t j = 0;
-    for (auto i : llvm::seq<int64_t>(0, inputRank)) {
-      if (inputType.isDynamicDim(i)) {
-        Value dim = getDimOp(rewriter, loc, input, i);
-        if (j >= resultRank) {
-          return rewriter.notifyMatchFailure(
-              op, "desired size is not compatible with the input tensor size");
-        }
-        checkDimEqualHelper(rewriter, loc, dim, expectedSize[j]);
-        reassociation[i].push_back(j++);
-        resultShape.push_back(kUnknownSize);
-      } else {
-        int64_t expandedDim = inputType.getDimSize(i);
-        int64_t outputDim;
-        // A do-while loop is used here to handle the cases where the input
-        // tensor has a dimension of size 1.
-        do {
-          if (j >= resultRank ||
-              !matchPattern(expectedSizeTorchInt[j],
-                            m_TorchConstantInt(&outputDim)) ||
-              expandedDim % outputDim != 0) {
-            return rewriter.notifyMatchFailure(
-                op, "total number of elements mismatch in the expansion");
+    // Remainder contains what the -1 dim should be, replace it in the dim list
+    for (size_t i = 0; i < dims.size(); i++) {
+      Value isNegative = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::slt, dims[i], zero);
+      dims[i] = rewriter.create<SelectOp>(loc, isNegative, remainder, dims[i]);
+    }
+
+    SmallVector<int64_t> resultShapeDyn;
+    for (auto i : llvm::seq<int64_t>(0, resultRank)) {
+      (void)i;
+      resultShapeDyn.push_back(kUnknownSize);
+    }
+
+    // Compress input tensor into a single dimension
+    Value inputCompressed = rewriter.create<tensor::GenerateOp>(
+        loc, RankedTensorType::get({kUnknownSize}, inEType), // Result type
+        eleCount,                                            // Dynamic extents
+        [&](OpBuilder &b, Location loc, ValueRange args) {   // Body function
+          SmallVector<Value> indices;
+          for (auto i = 0; i < inputRank; i++) {
+            Value numerator = args[0];
+            for (auto j = inputRank - 1; j > i; j--)
+              numerator = rewriter.create<arith::FloorDivSIOp>(loc, numerator,
+                                                               inShape[j]);
+            indices.push_back(
+                rewriter.create<arith::RemSIOp>(loc, numerator, inShape[i]));
           }
-          reassociation[i].push_back(j++);
-          resultShape.push_back(outputDim);
-          expandedDim /= outputDim;
-        } while (expandedDim != 1);
-      }
-    }
-    // Make sure that the splitted dimensions have the same number of elements
-    // as the dimension got splitted from.
-    if (j != resultRank)
-      return rewriter.notifyMatchFailure(
-          op, "desired size is not compatible with the input tensor size");
+          b.create<tensor::YieldOp>(
+              loc, b.create<tensor::ExtractOp>(loc, input, indices));
+        });
 
-    Type expandType =
-        RankedTensorType::get(resultShape, resultType.getElementType());
-    Value expandOp = rewriter.create<linalg::TensorExpandShapeOp>(
-        loc, expandType, adaptor.self(), reassociation);
-    rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, expandOp);
+    // Expand into the new size
+    Value outTensor = rewriter.create<tensor::GenerateOp>(
+        loc, RankedTensorType::get(resultShapeDyn, inEType), // Result type
+        dims,                                                // Dynamic extents
+        [&](OpBuilder &b, Location loc, ValueRange args) {   // Body function
+          Value index = zero;
+          for (size_t i = 0; i < args.size(); i++) {
+            Value res = args[i];
+            for (size_t j = i + 1; j < args.size(); j++)
+              res = b.create<arith::MulIOp>(loc, res, dims[j]);
+            index = b.create<arith::AddIOp>(loc, index, res);
+          }
+          b.create<tensor::YieldOp>(
+              loc, b.create<tensor::ExtractOp>(loc, inputCompressed, index));
+          ;
+        });
+
+    rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, outTensor);
+
     return success();
   }
 };

@@ -809,3 +809,55 @@ class Fill_TensorFloat64WithInt64(torch.nn.Module):
 @register_test_case(module_factory=lambda: Fill_TensorFloat64WithInt64())
 def Fill_TensorFloat64WithInt64_basic(module, tu: TestUtils):
     module.forward(torch.randn(3, 2, 4).to(torch.float64))
+
+
+class AtenViewModule_Mirror(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1], torch.float32, True),
+    ])
+
+    def forward(self, x):
+        return x.view(-1, 2, 3)
+
+@register_test_case(module_factory=lambda: AtenViewModule_Mirror())
+def AtenViewModule_Mirror_basic(module, tu: TestUtils):
+    module.forward(tu.rand(3, 2, 3))
+
+class AtenViewModule_Expand(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1], torch.float32, True),
+    ])
+
+    def forward(self, x):
+        return x.view(3, -1, 3)
+
+@register_test_case(module_factory=lambda: AtenViewModule_Expand())
+def AtenViewModule_Expand_basic(module, tu: TestUtils):
+    module.forward(tu.rand(9, 2))
+
+class AtenViewModule_Collapse(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1], torch.float32, True),
+    ])
+
+    def forward(self, x):
+        return x.view(-1)
+
+@register_test_case(module_factory=lambda: AtenViewModule_Collapse())
+def AtenViewModule_Collapse_basic(module, tu: TestUtils):
+    module.forward(tu.rand(3, 2, 3))
