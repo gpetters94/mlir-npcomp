@@ -295,6 +295,8 @@ public:
                    AtenDivTensorOp, Aten__And__TensorOp, AtenEqTensorOp,
                    AtenMinimumOp, AtenMaximumOp>(op)) {
       return visitBinaryBroadcastingOp(op, operands);
+    } else if (isa<AtenLeTensorOp>(op)) {
+      return visitCmpTensorOp(op, operands);
     } else if (auto lerpTensor = llvm::dyn_cast<AtenLerpTensorOp>(op)) {
       return visitAtenLerpTensorOp(lerpTensor, operands);
     } else if (auto flatten = dyn_cast<AtenFlattenUsingIntsOp>(op)) {
@@ -451,6 +453,8 @@ private:
   ChangeResult visitBinaryTensorScalarOp(
       Operation *op, ArrayRef<LatticeElement<ValueKnowledge> *> operands);
   ChangeResult visitBinaryBroadcastingOp(
+      Operation *op, ArrayRef<LatticeElement<ValueKnowledge> *> operands);
+  ChangeResult visitCmpTensorOp(
       Operation *op, ArrayRef<LatticeElement<ValueKnowledge> *> operands);
   ChangeResult
   visitAtenLerpTensorOp(AtenLerpTensorOp op,
@@ -795,6 +799,27 @@ ChangeResult TypeAnalyzer::visitBinaryBroadcastingOp(
   // category than the lhs and rhs and therefore doesn't really contribute to
   // type promotion.
   knowledge.dtype = getPromotedResultType(getContext(), {&lhs, &rhs});
+  return getLatticeElement(op->getResult(0)).join(knowledge);
+}
+
+ChangeResult TypeAnalyzer::visitCmpTensorOp(
+    Operation *op, ArrayRef<LatticeElement<ValueKnowledge> *> operands) {
+  // This is a general binary broadcasting shape transfer function.
+  // We currently don't track "size 1" in our lattice, but we might want to.
+  // We could make this more precise as well. But again, as with the other
+  // shape transfer functions, handling the statically-invalid case is
+  // tricky, so we defer that until we need it.
+  auto lhs = operands[0]->getValue();
+  auto rhs = operands[1]->getValue();
+  auto knowledge =
+      ValueKnowledge::getNotNonePessimisticValueState(getContext());
+  if (lhs.hasSizes && rhs.hasSizes) {
+    knowledge.hasSizes = true;
+    knowledge.sizes.resize(std::max(lhs.sizes.size(), rhs.sizes.size()),
+                           kUnknownSize);
+  }
+
+  knowledge.dtype = IntegerType::get(op->getContext(), 1);
   return getLatticeElement(op->getResult(0)).join(knowledge);
 }
 

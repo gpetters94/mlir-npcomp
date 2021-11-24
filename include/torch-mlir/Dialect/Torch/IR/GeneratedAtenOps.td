@@ -906,6 +906,36 @@ def Torch_AtenRsqrt_Op : Torch_Op<"aten.rsqrt_", [
   let assemblyFormat = "$self attr-dict `:` type($self) `->` type($result)";
 }
 
+def Torch_AtenLeTensorOp : Torch_Op<"aten.le.Tensor", [
+    AllowsTypeRefinement,
+    HasValueSemantics
+  ]> {
+  let summary = "Generated op for `aten::le.Tensor : (Tensor, Tensor) -> (Tensor)`";
+  let arguments = (ins
+    AnyTorchTensorType:$self,
+    AnyTorchTensorType:$other
+  );
+  let results = (outs
+    AnyTorchTensorType:$result
+  );
+  let assemblyFormat = "$self `,` $other attr-dict `:` type($self) `,` type($other) `->` type($result)";
+}
+
+def Torch_AtenLe_TensorOp : Torch_Op<"aten.le_.Tensor", [
+    IsTrailingUnderscoreInplaceVariant,
+    AllowsTypeRefinement
+  ]> {
+  let summary = "Generated op for `aten::le_.Tensor : (Tensor, Tensor) -> (Tensor)`";
+  let arguments = (ins
+    AnyTorchTensorType:$self,
+    AnyTorchTensorType:$other
+  );
+  let results = (outs
+    AnyTorchTensorType:$result
+  );
+  let assemblyFormat = "$self `,` $other attr-dict `:` type($self) `,` type($other) `->` type($result)";
+}
+
 def Torch_AtenMaximumOp : Torch_Op<"aten.maximum", [
     AllowsTypeRefinement,
     HasValueSemantics

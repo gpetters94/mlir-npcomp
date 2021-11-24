@@ -479,3 +479,20 @@ class ElementwiseRsqrtModule(torch.nn.Module):
 @register_test_case(module_factory=lambda: ElementwiseRsqrtModule())
 def ElementwiseRsqrtModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(3, 4))
+
+class ElementwiseCmpLeModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1], torch.float32, True),
+        ([-1, -1], torch.float32, True),
+    ])
+    def forward(self, a, b):
+        return torch.le(a, b)
+
+@register_test_case(module_factory=lambda: ElementwiseCmpLeModule())
+def ElementwiseCmpLeModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(3, 4), tu.rand(3, 4))
