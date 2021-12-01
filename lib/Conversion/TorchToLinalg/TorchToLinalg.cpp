@@ -1360,11 +1360,8 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
     return b.create<math::RsqrtOp>(loc, payloadArgs[0]);
   if (isa<AtenLog2Op>(op))
     return b.create<math::Log2Op>(loc, payloadArgs[0]);
-  if (isa<AtenLeTensorOp>(op)) {
-    Value ele = b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::ULE, payloadArgs[0], payloadArgs[1]);
-    ele.getType().dump();
-    return ele;
-  }
+  if (isa<AtenLeTensorOp>(op))
+    return b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::ULE, payloadArgs[0], payloadArgs[1]);
   if (isa<AtenSigmoidOp>(op)) {
     Type elementType = payloadArgs[0].getType();
     auto one = b.create<arith::ConstantOp>(loc, FloatAttr::get(elementType, 1));
