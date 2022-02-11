@@ -426,6 +426,8 @@ public:
       return visitSliceLikeOp(sliceTensor, operands, setDim);
     } else if (auto gather = dyn_cast<AtenGatherOp>(op)) {
       return visitAtenGatherOp(gather, operands);
+    } else if (auto copy = dyn_cast<Aten_CopyFromAndResizeOp>(op)) {
+      return visitAten_CopyFromAndResizeOp(copy, operands);
     } else if (isa<AtenExpandOp, AtenBroadcastToOp>(op)) {
       // Broadcast dimensions of size 1 withs sizes
       // spcecified by the `size` operand. -1 in the `size` list means the
@@ -605,6 +607,9 @@ private:
                    SetDimSizeFn setDim, bool keepDim = true);
   ChangeResult
   visitAtenGatherOp(AtenGatherOp op,
+                    ArrayRef<LatticeElement<ValueKnowledge> *> operands);
+  ChangeResult
+  visitAten_CopyFromAndResizeOp(Aten_CopyFromAndResizeOp op,
                     ArrayRef<LatticeElement<ValueKnowledge> *> operands);
 
   using SetDimSizePerListItemFn = std::function<void(
@@ -1634,6 +1639,18 @@ ChangeResult TypeAnalyzer::visitAtenGatherOp(
   knowledge.dtype = input.dtype;
   knowledge.hasSizes = index.hasSizes;
   knowledge.sizes = index.sizes;
+  return getLatticeElement(op.getResult()).join(knowledge);
+}
+
+ChangeResult TypeAnalyzer::visitAten_CopyFromAndResizeOp(
+    Aten_CopyFromAndResizeOp op, ArrayRef<LatticeElement<ValueKnowledge> *> operands) {
+  auto a = operands[0]->getValue();
+  auto b = operands[1]->getValue();
+  auto knowledge =
+      ValueKnowledge::getNotNonePessimisticValueState(op->getContext());
+  knowledge.dtype = a.dtype;
+  knowledge.hasSizes = a.hasSizes;
+  knowledge.sizes = a.sizes;
   return getLatticeElement(op.getResult()).join(knowledge);
 }
 

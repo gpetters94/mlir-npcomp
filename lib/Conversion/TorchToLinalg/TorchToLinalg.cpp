@@ -3267,6 +3267,19 @@ public:
 } // namespace
 
 namespace {
+class ConvertAten_CopyFromAndResizeOp : public OpConversionPattern<Aten_CopyFromAndResizeOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(Aten_CopyFromAndResizeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 class ConvertAtenSqueezeOp : public OpConversionPattern<AtenSqueezeOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -4705,6 +4718,8 @@ public:
     patterns.add<ConvertAtenFlattenUsingIntsOp>(typeConverter, context);
     target.addIllegalOp<AtenViewOp>();
     patterns.add<ConvertAtenViewOp>(typeConverter, context);
+    target.addIllegalOp<Aten_CopyFromAndResizeOp>();
+    patterns.add<ConvertAten_CopyFromAndResizeOp>(typeConverter, context);
     target.addIllegalOp<AtenMaxPool2dOp>();
     patterns.add<ConvertAtenMaxPool2dOp>(typeConverter, context);
     target.addIllegalOp<AtenConstantPadNdOp>();

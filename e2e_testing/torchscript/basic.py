@@ -1182,6 +1182,25 @@ def TensorOpaqueLiteralModule_basic(module, tu: TestUtils):
 
 # ==============================================================================
 
+class _CopyFromAndResizeModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1], torch.float32, True),
+        ([-1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, x, y):
+        return torch.ops.aten._copy_from_and_resize(x, y)
+
+@register_test_case(module_factory=lambda: _CopyFromAndResizeModule())
+def _CopyFromAndResizeModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(1, 2, 3), torch.rand(4, 2, 3))
+
+# ==============================================================================
+
 class ReturnTwoTensorF32I64(torch.nn.Module):
     def __init__(self):
         super().__init__()

@@ -3132,6 +3132,21 @@ def Torch_AtenTOp : Torch_Op<"aten.t", [
   let assemblyFormat = "$self attr-dict `:` qualified(type($self)) `->` qualified(type($result))";
 }
 
+def Torch_Aten_CopyFromAndResizeOp : Torch_Op<"aten._copy_from_and_resize", [
+    AllowsTypeRefinement,
+    HasValueSemantics
+  ]> {
+  let summary = "Generated op for `aten::_copy_from_and_resize : (Tensor, Tensor) -> (Tensor)`";
+  let arguments = (ins
+    AnyTorchTensorType:$self,
+    AnyTorchTensorType:$dst
+  );
+  let results = (outs
+    AnyTorchTensorType:$result
+  );
+  let assemblyFormat = "$self `,` $dst attr-dict `:` qualified(type($self)) `,` qualified(type($dst)) `->` qualified(type($result))";
+}
+
 def Torch_Aten__Contains__StrOp : Torch_Op<"aten.__contains__.str", [
     AllowsTypeRefinement,
     HasValueSemantics
