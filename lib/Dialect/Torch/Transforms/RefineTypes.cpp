@@ -566,7 +566,7 @@ ChangeResult TypeAnalyzer::visitOperation(
   }
 
   // Promote the two dtypes assuming non-zero rank.
-  if (isa<AtenMmOp, AtenBmmOp, AtenMatmulOp, AtenConv2dOp>(op)) {
+  if (isa<AtenMmOp, AtenBmmOp, AtenMatmulOp, AtenConv2dOp, AtenConvolutionOp>(op)) {
     auto knowledge =
         ValueKnowledge::getNotNonePessimisticValueState(op->getContext());
     knowledge.dtype = getPromotedResultTypeAssumingNonZeroRank(
@@ -652,6 +652,19 @@ ChangeResult TypeAnalyzer::visitOperation(
     changed |= incorporateKnowledge(op->getResult(1), result1Knowledge);
     changed |= incorporateKnowledge(op->getResult(2), result1Knowledge);
     return changed;
+  }
+
+  if (isa<AtenConvolutionBackwardOp>(op)) {
+    auto grad = operands[0]->getValue();
+    auto knowledge0 = ValueKnowledge::getNotNonePessimisticValueState(op->getContext());
+    knowledge0.dtype = grad.dtype;
+    auto knowledge1 = ValueKnowledge::getNotNonePessimisticValueState(op->getContext());
+    knowledge1.dtype = grad.dtype;
+
+    auto knowledge = incorporateKnowledge(op->getResult(0), knowledge0);
+    knowledge |= incorporateKnowledge(op->getResult(1), knowledge0);
+    knowledge |= incorporateKnowledge(op->getResult(2), knowledge1);
+    return knowledge;
   }
 
   if (auto arange = dyn_cast<AtenArangeOp>(op)) {
