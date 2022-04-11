@@ -477,6 +477,9 @@ public:
     auto castIndexToInt = [&](Value v) {
       return rewriter.create<arith::IndexCastOp>(loc, intType, v);
     };
+    auto castIntToIndex = [&](Value v) {
+      return rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), v);
+    };
 
     SmallVector<int64_t> paddingInts;
     if (!matchPattern(op.padding(), m_TorchConstantIntList(paddingInts))) {
@@ -492,14 +495,36 @@ public:
       return rewriter.notifyMatchFailure(op,
                                          "only support constant int dilations");
 
+    Value c1 =
+        rewriter.create<arith::ConstantOp>(loc, IntegerAttr::get(intType, 1));
+    Value c0 =
+        rewriter.create<arith::ConstantOp>(loc, FloatAttr::get(elementType, 0));
+    Value ci0 =
+        rewriter.create<arith::ConstantOp>(loc, rewriter.getI64IntegerAttr(0));
+
+    bool padded = false;
+    SmallVector<int64_t> unPaddingHigh(paddingInts.size()+2, 0);
+    SmallVector<int64_t> unPaddingLow(paddingInts.size()+2, 0);
     for (size_t i = 0; i < paddingInts.size(); i++) {
-      if (paddingInts[i] != 0)
-        return rewriter.notifyMatchFailure(op, "only support 0 padding");
-      paddingInts[i] += 1;
+      if (paddingInts[i] != 0) {
+        padded = true;
+      }
+      unPaddingHigh[i+2] = paddingInts[i] / 2;
+      unPaddingLow[i+2] = paddingInts[i] - unPaddingHigh[i+2];
+      paddingInts[i] = 1;
     }
+
+    // // Unpad grad_output
+    // if(padded) {
+    //   SmallVector<Value> unPaddingValueHigh = getAsConstantIndexValues(rewriter, loc, unPaddingHigh);
+    //   SmallVector<Value> unPaddingValueLow = getAsConstantIndexValues(rewriter, loc, unPaddingLow);
+    //   SmallVector<Value> strides(unPaddingValueHigh.size(), c1);
+    //   grad = rewriter.create<tensor::ExtractSliceOp>(loc, /*ResultType*/, grad, unPaddingValueLow, unPaddingValueHigh, strides);
+    // }
 
     SmallVector<Value> paddingIntValues =
         getAsConstantIntValues(rewriter, loc, paddingInts);
+    SmallVector<Value> paddingOneValues(paddingIntValues.size(), c1);
     SmallVector<Value> dilationIntValues =
         getAsConstantIntValues(rewriter, loc, dilationInts);
     SmallVector<Value> strideIntValues =
@@ -508,12 +533,6 @@ public:
     auto stridesAttr = rewriter.getI64VectorAttr(strideInts);
     auto dilationAttr = rewriter.getI64VectorAttr(dilationInts);
 
-    Value c1 =
-        rewriter.create<arith::ConstantOp>(loc, IntegerAttr::get(intType, 1));
-    Value c0 =
-        rewriter.create<arith::ConstantOp>(loc, FloatAttr::get(elementType, 0));
-    Value ci0 =
-        rewriter.create<arith::ConstantOp>(loc, rewriter.getI64IntegerAttr(0));
     Value groupEqual1 = rewriter.create<arith::CmpIOp>(
         loc, arith::CmpIPredicate::eq, groups, c1);
     rewriter.create<cf::AssertOp>(
@@ -546,19 +565,19 @@ public:
     };
     auto convolve = [&](Value lhs, Value rhs, SmallVector<Value> &lhDims,
                         SmallVector<Value> &rhDims, bool valid) -> Value {
-      Value paddedLhs = (valid ? lhs
-                               : torch_to_linalg::getPaddedTensor(
-                                     op, rewriter, lhs, paddingIncludingNC,
-                                     paddingIncludingNC, c0));
 
       SmallVector<Value> outDims{lhDims[0], rhDims[0]};
       for (size_t i = 0; i < inRank - 2; i++)
         outDims.push_back(
-            getConvOutputDim(lhDims[i + 2], rhDims[i + 2], paddingIntValues[i],
+            getConvOutputDim(lhDims[i + 2], rhDims[i + 2], paddingOneValues[i],
                              strideIntValues[i], dilationIntValues[i], valid));
 
       Value initTensor =
           rewriter.create<linalg::InitTensorOp>(loc, outDims, elementType);
+
+      Value paddedLhs = (valid || padded ? lhs : torch_to_linalg::getPaddedTensor(
+                                     op, rewriter, lhs, paddingIncludingNC,
+                                     paddingIncludingNC, c0, initTensor.getType()));
 
       Value biasInitTensor;
       biasInitTensor =
@@ -648,11 +667,18 @@ public:
       arrangement.push_back(i);
     std::iter_swap(arrangement.begin(), arrangement.begin() + 1);
 
+    // Convolution between grad_output and rotated kernel (input gradient)
     weight = rearrange(weight, arrangement);
+    std::iter_swap(weightDims.begin(), weightDims.begin()+1);
+    SmallVector<Value> gradDimsUnpadded{gradDims[1], weightDims[1]};
+    for(size_t i = 0; i < paddingIntValues.size(); i++)
+      gradDimsUnpadded.push_back(rewriter.create<arith::SubIOp>(loc, gradDims[i+2], castIntToIndex(paddingIntValues[i])));
     Value resInput =
-        convolve(grad, rotate(weight, 2, inRank), gradDims, weightDims, false);
+        convolve(grad, rotate(weight, 2, inRank), (padded ? gradDimsUnpadded : gradDims), weightDims, false);
 
     // Convolution between input and grad_output (weight gradient)
+    std::iter_swap(inputDims.begin(), inputDims.begin()+1);
+    std::iter_swap(gradDims.begin(), gradDims.begin()+1);
     Value resWeight =
         convolve(rearrange(input, arrangement), rearrange(grad, arrangement),
                  inputDims, gradDims, true);

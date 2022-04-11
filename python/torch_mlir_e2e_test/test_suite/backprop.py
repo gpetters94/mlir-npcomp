@@ -94,6 +94,25 @@ def ConvolutionBackwardModule2D_basic(module, tu: TestUtils):
     with torch.backends.mkldnn.flags(enabled=False):
         module.forward(torch.randn(3, 3, 8, 8), torch.randn(3, 3, 9, 9), torch.randn(3, 3, 2, 2))
 
+class ConvolutionBackwardModule2DPadded(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, -1], torch.float32, True),
+        ([-1, -1, -1, -1], torch.float32, True),
+        ([-1, -1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, grad_out, input_vec, weight):
+        return torch.ops.aten.convolution_backward(grad_out, input_vec, weight, bias_sizes=None, stride=[1, 1], padding=[3, 3], dilation=[1, 1], transposed=False, output_padding=[0], groups=1, output_mask=[True, True, True])
+
+@register_test_case(module_factory=lambda: ConvolutionBackwardModule2DPadded())
+def ConvolutionBackwardModule2DPadded_basic(module, tu: TestUtils):
+    with torch.backends.mkldnn.flags(enabled=False):
+        module.forward(torch.randn(3, 3, 14, 14), torch.randn(3, 3, 9, 9), torch.randn(3, 3, 2, 2))
+
 #class ConvolutionBackwardModule3D(torch.nn.Module):
 #    def __init__(self):
 #        super().__init__()
