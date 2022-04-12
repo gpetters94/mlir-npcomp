@@ -38,18 +38,11 @@ Value torch_to_linalg::getPaddedTensor(
     Operation *op, OpBuilder &b, Value &input,
     SmallVectorImpl<int64_t> &lowPaddingInts,
     SmallVectorImpl<int64_t> &highPaddingInts, Value pad) {
-  Location loc = op->getLoc();
   Type rankedTensorType =
       tensor::PadOp::inferResultType(input.getType().cast<RankedTensorType>(),
                                      lowPaddingInts, highPaddingInts);
-  SmallVector<OpFoldResult> lowPaddings =
-      getIndexIntsAsOpFoldResult(b, lowPaddingInts);
-  SmallVector<OpFoldResult> highPaddings =
-      getIndexIntsAsOpFoldResult(b, highPaddingInts);
-  Value paddedInput = tensor::createPadScalarOp(
-      rankedTensorType, input, pad, /*low=*/lowPaddings, /*high=*/highPaddings,
-      /*packing=*/false, loc, b);
-  return paddedInput;
+  return torch_to_linalg::getPaddedTensor(
+    op, b, input, lowPaddingInts, highPaddingInts, pad, rankedTensorType);
 }
 
 // Helper function to get the padding tensor given the padding int values.
