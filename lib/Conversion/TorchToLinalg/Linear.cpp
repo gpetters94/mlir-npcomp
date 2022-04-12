@@ -459,24 +459,19 @@ public:
   matchAndRewrite(AtenConvolutionBackwardOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
-    MLIRContext *context = op->getContext();
-    Value grad = adaptor.grad_output();
+    Value gradOutput = adaptor.grad_output();
     Value input = adaptor.input();
     Value weight = adaptor.weight();
     Value groups = adaptor.groups();
 
-    Type elementType = grad.getType().cast<RankedTensorType>().getElementType();
+    Type elementType = gradOutput.getType().cast<RankedTensorType>().getElementType();
     if (!elementType.isa<mlir::FloatType>())
       return op.emitError("unimplemented: non-floating point type");
-    size_t inRank = grad.getType().cast<RankedTensorType>().getRank();
-    if (inRank != 4)
+    size_t gradOutputRank = gradOutput.getType().cast<RankedTensorType>().getRank();
+    if (gradOutputRank != 4)
       return rewriter.notifyMatchFailure(
           op, "unimplemented: only 2D convolution currently supported");
 
-    Type intType = IntegerType::get(context, 64);
-    auto castIndexToInt = [&](Value v) {
-      return rewriter.create<arith::IndexCastOp>(loc, intType, v);
-    };
     auto castIntToIndex = [&](Value v) {
       return rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), v);
     };
@@ -496,7 +491,7 @@ public:
                                          "only support constant int dilations");
 
     Value c1 =
-        rewriter.create<arith::ConstantOp>(loc, IntegerAttr::get(intType, 1));
+        rewriter.create<arith::ConstantOp>(loc, rewriter.getI64IntegerAttr(1));
     Value c0 =
         rewriter.create<arith::ConstantOp>(loc, FloatAttr::get(elementType, 0));
     Value ci0 =
@@ -519,7 +514,7 @@ public:
     //   SmallVector<Value> unPaddingValueHigh = getAsConstantIndexValues(rewriter, loc, unPaddingHigh);
     //   SmallVector<Value> unPaddingValueLow = getAsConstantIndexValues(rewriter, loc, unPaddingLow);
     //   SmallVector<Value> strides(unPaddingValueHigh.size(), c1);
-    //   grad = rewriter.create<tensor::ExtractSliceOp>(loc, /*ResultType*/, grad, unPaddingValueLow, unPaddingValueHigh, strides);
+    //   gradOutput = rewriter.create<tensor::ExtractSliceOp>(loc, /*ResultType*/, gradOutput, unPaddingValueLow, unPaddingValueHigh, strides);
     // }
 
     SmallVector<Value> paddingIntValues =
@@ -540,12 +535,11 @@ public:
 
     // Pad the input tensor according to padding.
     SmallVector<int64_t> paddingIncludingNC = {0, 0};
-    paddingIncludingNC.insert(paddingIncludingNC.end(), paddingInts.begin(),
-                              paddingInts.end());
+    paddingIncludingNC.append(paddingInts);
 
-    SmallVector<Value> gradDims, inputDims, weightDims;
-    for (size_t i = 0; i < inRank; i++) {
-      gradDims.push_back(getDimOp(rewriter, loc, grad, i));
+    SmallVector<Value> gradOutputDims, inputDims, weightDims;
+    for (size_t i = 0; i < gradOutputRank; i++) {
+      gradOutputDims.push_back(getDimOp(rewriter, loc, gradOutput, i));
       inputDims.push_back(getDimOp(rewriter, loc, input, i));
       weightDims.push_back(getDimOp(rewriter, loc, weight, i));
     }
@@ -555,7 +549,7 @@ public:
                                 bool valid) -> Value {
       if (valid) {
         return torch_to_linalg::getOutputDimForConvOps(
-            rewriter, loc, lhDim, ci0, dilation, castIndexToInt(rhDim), stride);
+            rewriter, loc, lhDim, ci0, dilation, castIndexToInt(rewriter, loc, rhDim), stride);
       }
       // TODO: dilation, stride
       Value c1 =
@@ -567,7 +561,7 @@ public:
                         SmallVector<Value> &rhDims, bool valid) -> Value {
 
       SmallVector<Value> outDims{lhDims[0], rhDims[0]};
-      for (size_t i = 0; i < inRank - 2; i++)
+      for (size_t i = 0; i < gradOutputRank - 2; i++)
         outDims.push_back(
             getConvOutputDim(lhDims[i + 2], rhDims[i + 2], paddingOneValues[i],
                              strideIntValues[i], dilationIntValues[i], valid));
@@ -579,8 +573,7 @@ public:
                                      op, rewriter, lhs, paddingIncludingNC,
                                      paddingIncludingNC, c0, initTensor.getType()));
 
-      Value biasInitTensor;
-      biasInitTensor =
+      Value biasInitTensor =
           rewriter.create<linalg::FillOp>(loc, c0, initTensor).getResult(0);
 
       // TODO: add 1D and 3D case
@@ -663,33 +656,33 @@ public:
     };
 
     SmallVector<int64_t> arrangement;
-    for (int64_t i = 0; i < int64_t(inRank); i++)
+    for (int64_t i = 0; i < int64_t(gradOutputRank); i++)
       arrangement.push_back(i);
-    std::iter_swap(arrangement.begin(), arrangement.begin() + 1);
+    std::iter_swap(arrangement.begin(), arrangement.begin()+1);
 
     // Convolution between grad_output and rotated kernel (input gradient)
     weight = rearrange(weight, arrangement);
     std::iter_swap(weightDims.begin(), weightDims.begin()+1);
-    SmallVector<Value> gradDimsUnpadded{gradDims[1], weightDims[1]};
+    SmallVector<Value> gradOutputDimsUnpadded{gradOutputDims[1], weightDims[1]};
     for(size_t i = 0; i < paddingIntValues.size(); i++)
-      gradDimsUnpadded.push_back(rewriter.create<arith::SubIOp>(loc, gradDims[i+2], castIntToIndex(paddingIntValues[i])));
+      gradOutputDimsUnpadded.push_back(rewriter.create<arith::SubIOp>(loc, gradOutputDims[i+2], castIntToIndex(paddingIntValues[i])));
     Value resInput =
-        convolve(grad, rotate(weight, 2, inRank), (padded ? gradDimsUnpadded : gradDims), weightDims, false);
+        convolve(gradOutput, rotate(weight, 2, gradOutputRank), (padded ? gradOutputDimsUnpadded : gradOutputDims), weightDims, false);
 
     // Convolution between input and grad_output (weight gradient)
     std::iter_swap(inputDims.begin(), inputDims.begin()+1);
-    std::iter_swap(gradDims.begin(), gradDims.begin()+1);
+    std::iter_swap(gradOutputDims.begin(), gradOutputDims.begin()+1);
     Value resWeight =
-        convolve(rearrange(input, arrangement), rearrange(grad, arrangement),
-                 inputDims, gradDims, true);
+        convolve(rearrange(input, arrangement), rearrange(gradOutput, arrangement),
+                 inputDims, gradOutputDims, true);
     resWeight = rearrange(resWeight, arrangement);
 
     // Sum up grad output (bias gradient)
     DenseSet<int64_t> dimSet{0};
-    for (size_t i = 2; i < inRank; i++)
+    for (size_t i = 2; i < gradOutputRank; i++)
       dimSet.insert(i);
     Value resBias = torch_to_linalg::createReductionLinalgGeneric(
-        rewriter, loc, grad, dimSet, false, c0,
+        rewriter, loc, gradOutput, dimSet, false, c0,
         [&](OpBuilder &b, Location loc, ValueRange payloadArgs) {
           Value result = rewriter.create<arith::AddFOp>(loc, payloadArgs[0],
                                                         payloadArgs[1]);
