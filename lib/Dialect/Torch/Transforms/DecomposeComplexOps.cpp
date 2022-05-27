@@ -10,6 +10,7 @@
 #include "PassDetail.h"
 
 #include "mlir/IR/BuiltinDialect.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
@@ -17,6 +18,7 @@
 #include "torch-mlir/Dialect/Torch/Transforms/Passes.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 #include "llvm/ADT/StringExtras.h"
+#include <algorithm>
 
 using namespace mlir;
 using namespace mlir::torch;
@@ -768,6 +770,41 @@ public:
   }
 };
 } // namespace
+
+namespace {
+class DecomposeAtenConvolutionTransposedOp : public OpRewritePattern<AtenConvolutionOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenConvolutionOp op,
+                                PatternRewriter &rewriter) const override {
+
+    bool transposed = false;
+    if(matchPattern(op.transposed(), m_TorchConstantBool(&transposed)) && transposed)
+      return failure();
+    
+    // Swap input and weight
+    Value input = op.input();
+    Value weight = op.weight();
+    std::swap(input, weight);
+
+    // Apply stride to input
+    // TODO
+
+    auto inRank = getTensorRank(input);
+    Value c1 = rewriter.create<Torch::ConstantIntOp>(op.getLoc(), rewriter.getI64IntegerAttr(1));
+    Value stride = rewriter.create<PrimListConstructOp>(op.getLoc(), Torch::ListType::get(Torch::IntType::get(op.getContext())), SmallVector<Value>(inRank-2, c1));
+    Value cfalse = rewriter.create<Torch::ConstantBoolOp>(op.getLoc(), false);
+
+    rewriter.replaceOpWithNewOp<AtenConvolutionOp>(
+        op, op->getResultTypes(), input, weight, op.bias(),
+        stride, op.padding(), op.dilation(), cfalse,
+        op.output_padding(), op.groups());
+
+    return success();
+  }
+};
+} // namespace
+
 
 // Decompose aten.conv2d to aten.convolution
 namespace {
@@ -1848,6 +1885,7 @@ class DecomposeComplexOpsPass
     patterns.add<DecomposeAtenNativeBatchNormOp>(context);
     target.addIllegalOp<AtenConvolutionOverrideableOp>();
     patterns.add<DecomposeAtenConvolutionOverrideableOp>(context);
+    patterns.add<DecomposeAtenConvolutionTransposedOp>(context);
     target.addIllegalOp<AtenConv2dOp>();
     patterns.add<DecomposeAtenConv2dOp>(context);
     patterns.add<DecomposeAtenArangeOp>(context);

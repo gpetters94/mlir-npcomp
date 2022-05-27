@@ -260,3 +260,28 @@ class ConvolutionModule2DStrided(torch.nn.Module):
 @register_test_case(module_factory=lambda: ConvolutionModule2DStrided())
 def ConvolutionModule2DStrided_basic(module, tu: TestUtils):
     module.forward(torch.randn(3, 3, 10, 10), torch.randn(3, 3, 2, 2))
+
+class ConvolutionModule2DTransposed(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, -1], torch.float32, True),
+        ([-1, -1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, inputVec, weight):
+        return torch.ops.aten.convolution(inputVec,
+                                          weight,
+                                          bias=None,
+                                          stride=[1, 1],
+                                          padding=[0, 0],
+                                          dilation=[1, 1],
+                                          transposed=True,
+                                          output_padding=[0, 0],
+                                          groups=1)
+
+@register_test_case(module_factory=lambda: ConvolutionModule2DTransposed())
+def ConvolutionModule2DTransposed_basic(module, tu: TestUtils):
+    module.forward(torch.randn(3, 3, 10, 10), torch.randn(3, 3, 2, 2))
