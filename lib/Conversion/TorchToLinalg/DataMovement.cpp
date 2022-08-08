@@ -301,6 +301,39 @@ public:
           op, "desired size list length mismatches with the result type rank");
     }
 
+    // Case where all sizes (input and output) are statically known
+    SmallVector<int64_t> outputSizeIntList;
+    if (matchPattern(op.size(), m_TorchConstantIntList(outputSizeIntList)) &&
+        llvm::none_of(outputSizeIntList,
+                      [](int64_t x) { return x == kUnknownSize; }) &&
+        inputType.hasStaticShape()) {
+
+      SmallVector<AffineExpr> inExprs, outExprs;
+      for (auto i = 0; i < inputRank; i++)
+        inExprs.push_back(getAffineDimExpr(i, rewriter.getContext()));
+      for (auto i = 0; i < inputRank; i++)
+        outExprs.push_back(getAffineDimExpr(i, rewriter.getContext()));
+      SmallVector<AffineMap> indexingMaps = {
+          AffineMap::get(inputRank, 0, inExprs, op.getContext()),
+          AffineMap::get(outputSizeIntList.size(), 0, outExprs,
+                         op.getContext())};
+      SmallVector<StringRef> iteratorTypes(inputRank,
+                                           getParallelIteratorTypeName());
+      Value outputTensor = rewriter.create<linalg::InitTensorOp>(
+          loc, outputSizeIntList, resultType.getElementType());
+      Value result = rewriter
+                         .create<linalg::GenericOp>(
+                             loc, resultType, input, outputTensor, indexingMaps,
+                             iteratorTypes,
+                             [](OpBuilder &b, Location loc, ValueRange args) {
+                               b.create<linalg::YieldOp>(loc, args[0]);
+                             })
+                         .getResult(0);
+
+      rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, result);
+      return success();
+    }
+
     // Currently, we only handle the cases where each dimension is either
     // being expanded or collapsed. We do not handle cases where it's neither
     // collapsing nor expanding like view of [2,3] for 3x2 tensor.
@@ -319,6 +352,7 @@ public:
     // collapsed. Note this may technically not always be true.
     // TODO: think of a way better way to at least detect when this assumption
     // is violated for the cases of dynamic dimensions.
+
     SmallVector<int64_t> outputShape(resultRank, kUnknownSize);
     SmallVector<ReassociationIndices> unchangedDims;
     llvm::Optional<int64_t> inferredDimension;
