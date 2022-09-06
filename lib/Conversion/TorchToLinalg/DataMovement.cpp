@@ -301,6 +301,42 @@ public:
           op, "desired size list length mismatches with the result type rank");
     }
 
+    // Case where all sizes (input and output) are statically known
+    SmallVector<int64_t> outputSizeIntList;
+    if (matchPattern(op.size(), m_TorchConstantIntList(outputSizeIntList)) &&
+        llvm::none_of(outputSizeIntList,
+                      [](int64_t x) { return x == kUnknownSize; }) &&
+        inputType.hasStaticShape()) {
+
+      int64_t midSize = 1;
+      for (auto outSize : outputSizeIntList)
+        midSize *= outSize;
+      auto midType =
+          RankedTensorType::get({midSize}, resultType.getElementType());
+      auto outType =
+          RankedTensorType::get(outputSizeIntList, resultType.getElementType());
+      int64_t outputRank = outputSizeIntList.size();
+
+      SmallVector<ReassociationIndices> flatten(1);
+      for (auto i = 0; i < inputRank; i++)
+        flatten[0].push_back(i);
+      SmallVector<ReassociationIndices> unflatten(1);
+      for (auto i = 0; i < outputRank; i++)
+        unflatten[0].push_back(i);
+
+      Value flattened =
+          (inputRank <= 1 ? input
+                          : rewriter.create<tensor::CollapseShapeOp>(
+                                loc, midType, input, flatten));
+      Value result =
+          (outputRank <= 1 ? flattened
+                           : rewriter.create<tensor::ExpandShapeOp>(
+                                 loc, outType, flattened, unflatten));
+
+      rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, result);
+      return success();
+    }
+
     // Currently, we only handle the cases where each dimension is either
     // being expanded or collapsed. We do not handle cases where it's neither
     // collapsing nor expanding like view of [2,3] for 3x2 tensor.
@@ -319,6 +355,7 @@ public:
     // collapsed. Note this may technically not always be true.
     // TODO: think of a way better way to at least detect when this assumption
     // is violated for the cases of dynamic dimensions.
+
     SmallVector<int64_t> outputShape(resultRank, kUnknownSize);
     SmallVector<ReassociationIndices> unchangedDims;
     llvm::Optional<int64_t> inferredDimension;

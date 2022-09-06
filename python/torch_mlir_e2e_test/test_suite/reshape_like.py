@@ -259,6 +259,25 @@ def View1DFoldModule_basic(module, tu: TestUtils):
 
 # ==============================================================================
 
+class ViewStaticModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([5, 12, 3, 8], torch.float32, True),
+    ])
+
+    def forward(self, a):
+        return a.view(6, 5, 6, 8)
+
+@register_test_case(module_factory=lambda: ViewStaticModule())
+def ViewStaticModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(5, 12, 3, 8))
+
+# ==============================================================================
+
 class ViewCollapseInferredDimModule(torch.nn.Module):
     def __init__(self):
         super().__init__()

@@ -906,6 +906,9 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
 
     Value input = payloadArgs[0];
     Value mask = payloadArgs[1];
+    if (mask.getType().isa<mlir::FloatType>())
+      mask = b.create<arith::FPToUIOp>(
+          loc, IntegerType::get(op->getContext(), 1), mask);
     Value fillValue = convertScalarToDtype(b, loc, adaptor.value(), dtype);
 
     return b.create<arith::SelectOp>(loc, mask, fillValue, input);
