@@ -94,7 +94,6 @@ public:
 
 namespace {
 class ConvertAtenFlipOp : public OpConversionPattern<AtenFlipOp> {
-
 public:
   using OpConversionPattern::OpConversionPattern;
   LogicalResult
@@ -501,15 +500,18 @@ public:
       return rewriter.create<arith::IndexCastOp>(loc, intType, v);
     };
 
-    SmallVector<int64_t> paddingInts;
-    if (!matchPattern(op.padding(), m_TorchConstantIntList(paddingInts))) {
+    SmallVector<Value> paddingIntValues;
+    if (!getListConstructElements(adaptor.padding(), paddingIntValues))
       return rewriter.notifyMatchFailure(
-          op, "only support constant padding values");
-    }
+          op, "only support padding from a list construct");
     SmallVector<int64_t> strideInts;
     if (!matchPattern(op.stride(), m_TorchConstantIntList(strideInts)))
       return rewriter.notifyMatchFailure(op,
                                          "only support constant int strides");
+    SmallVector<int64_t> paddingInts;
+    if (!matchPattern(op.padding(), m_TorchConstantIntList(paddingInts)))
+      return rewriter.notifyMatchFailure(op,
+                                         "only support constant int dilations");
     SmallVector<int64_t> dilationInts;
     if (!matchPattern(op.dilation(), m_TorchConstantIntList(dilationInts)))
       return rewriter.notifyMatchFailure(op,
@@ -548,8 +550,6 @@ public:
              "invalid: groups must divide weight batch size evenly.");
     SmallVector<Value> dilationIntValues =
         getAsConstantIntValues(rewriter, loc, dilationInts);
-    SmallVector<Value> paddingIntValues =
-        getAsConstantIntValues(rewriter, loc, paddingInts);
     SmallVector<Value> strideIntValues =
         getAsConstantIntValues(rewriter, loc, strideInts);
 
@@ -611,6 +611,7 @@ public:
         Value offset = rewriter.create<arith::SubIOp>(loc, weightDims[i], c1);
         offset = rewriter.create<arith::MulIOp>(
             loc, offset, castIntToIndex(rewriter, loc, dilationIntValues[i]));
+        paddingIntValues[i].getType().dump();
         offset = rewriter.create<arith::SubIOp>(
             loc, offset, castIntToIndex(rewriter, loc, paddingIntValues[i]));
 
