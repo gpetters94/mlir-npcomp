@@ -18,6 +18,7 @@
 #include "mlir-c/BuiltinTypes.h"
 #include "mlir-c/Diagnostics.h"
 #include "torch-mlir-c/Registration.h"
+#include <torch/csrc/tensor/python_tensor.h>
 
 namespace py = pybind11;
 using namespace torch_mlir;
@@ -174,6 +175,24 @@ void ModuleBuilder::importModule(torch::jit::Module jitModule,
   mlirOperationSetAttributeByName(mlirModuleGetOperation(module),
                                   toMlirStringRef("torch.debug_module_name"),
                                   debugModuleNameAttr);
+
+  std::string globalDType;
+  switch (torch::tensors::get_default_scalar_type()) {
+  case at::ScalarType::Half:
+    globalDType = "torch.float16";
+    break;
+  case at::ScalarType::Double:
+    globalDType = "torch.float64";
+    break;
+  default:
+    globalDType = "torch.float32";
+    break;
+  };
+  auto moduleDType = mlirStringAttrGet(context, toMlirStringRef(globalDType));
+  mlirOperationSetAttributeByName(mlirModuleGetOperation(module),
+                                  toMlirStringRef("torch_mlir.default_dtype"),
+                                  moduleDType);
+
   importIValue(jitModule._ivalue(), mlirModuleGetBody(module),
                mlirModuleGetContext(module), *classAnnotator, importOptions);
 }
