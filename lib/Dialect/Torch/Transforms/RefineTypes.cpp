@@ -744,7 +744,7 @@ void TypeAnalysis::visitOperation(Operation *op,
   }
 
   // Take dtype from second operand.
-  if (isa<AtenNllLossBackwardOp, AtenMaxPool2dWithIndicesBackwardOp>(op)) {
+  if (isa<AtenNllLossBackwardOp, AtenMaxPool2dWithIndicesBackwardOp, AtenEmbeddingOp>(op)) {
     auto self = operands[1]->getValue();
     auto knowledge =
         ValueKnowledge::getTensorPessimisticValueState(op->getContext());
@@ -1142,15 +1142,6 @@ void TypeAnalysis::visitOperation(Operation *op,
     return;
   }
 
-  if (auto embedding = dyn_cast<AtenEmbeddingOp>(op)) {
-    auto knowledge =
-        ValueKnowledge::getTensorPessimisticValueState(op->getContext());
-    knowledge.dtype = getDefaultDtypeForTorchScalar(
-        op, Torch::FloatType::get(op->getContext()));
-    incorporateKnowledge(embedding.getResult(), knowledge);
-    return;
-  }
-  
   if (isa<Aten_EmbeddingBagOp, AtenEmbeddingBagPaddingIdxOp>(op)) {
     visitAtenEmbeddingBagOp(op);
     return;
