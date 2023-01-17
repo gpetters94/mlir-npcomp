@@ -526,23 +526,6 @@ static Type getDefaultDtypeForTorchScalar(Operation *op, Type type) {
       "getDefaultDtypeForTorchScalar called on an unsupported type");
 }
 
-// This is the type rule used for deciding builtin type for:
-// 1. The dtype of the result tensor when converting a Scalar into a Tensor like
-// PrimNumToTensorScalarOp.
-// 2. The scalar type for type promotion when a scalar is an operand of scalar
-// only operation like AtenAddOp.
-static Type getBuiltInTypeForTorchScalar(Type type) {
-  MLIRContext *context = type.getContext();
-  if (type.isa<Torch::FloatType>())
-    return Float64Type::get(context);
-  if (type.isa<Torch::IntType>())
-    return IntegerType::get(context, 64, IntegerType::Signed);
-  if (type.isa<Torch::BoolType>())
-    return IntegerType::get(context, 1);
-  llvm_unreachable(
-      "getBuiltInTypeForTorchScalar called on an unsupported type");
-}
-
 static torch_upstream::ResultTypeState
 updateResultTypeState(Type scalarType,
                       const torch_upstream::ResultTypeState &inState) {
@@ -722,7 +705,8 @@ void TypeAnalysis::visitOperation(Operation *op,
           AtenTriuOp, AtenMaskedFillTensorOp, AtenRollOp, AtenPowTensorTensorOp,
           AtenLiftFreshCopyOp, AtenIndexTensorHackedTwinOp,
           AtenUpsampleNearest2dOp, AtenMishOp, AtenRoundOp, AtenFillTensorOp,
-          AtenUpsampleNearest2dBackwardOp, AtenLeakyReluBackwardOp>(op)) {
+          AtenUpsampleNearest2dBackwardOp, AtenLeakyReluBackwardOp,
+          AtenEmbeddingOp>(op)) {
     return incorporateKnowledge(op->getResult(0), operands[0]->getValue());
   }
 
@@ -744,7 +728,7 @@ void TypeAnalysis::visitOperation(Operation *op,
   }
 
   // Take dtype from second operand.
-  if (isa<AtenNllLossBackwardOp, AtenMaxPool2dWithIndicesBackwardOp, AtenEmbeddingOp>(op)) {
+  if (isa<AtenNllLossBackwardOp, AtenMaxPool2dWithIndicesBackwardOp>(op)) {
     auto self = operands[1]->getValue();
     auto knowledge =
         ValueKnowledge::getTensorPessimisticValueState(op->getContext());
@@ -1356,8 +1340,8 @@ template <typename OpTy>
 void TypeAnalysis::visitScalarToTensorConversionOp(OpTy op) {
   auto knowledge =
       ValueKnowledge::getTensorPessimisticValueState(op.getContext());
-  Value t = op.t();
-  Value dtype = op.dtype();
+  Value t = op.getT();
+  Value dtype = op.getDtype();
   fillInDTypeGivenDTypeAndDataType(op, knowledge, dtype, t.getType());
   incorporateKnowledge(op.getResult(), knowledge);
 }
@@ -1398,7 +1382,8 @@ void TypeAnalysis::visitConstantTensorAllocOp(OpTy op,
       ValueKnowledge::getTensorPessimisticValueState(op->getContext());
   if (!dataType)
     dataType = Torch::FloatType::get(op->getContext());
-  fillInDTypeGivenDTypeAndDataType(op, knowledge, op.dtype(), dataType.value());
+  fillInDTypeGivenDTypeAndDataType(op, knowledge, op.getDtype(),
+                                   dataType.value());
   incorporateKnowledge(op.getResult(), knowledge);
 }
 
