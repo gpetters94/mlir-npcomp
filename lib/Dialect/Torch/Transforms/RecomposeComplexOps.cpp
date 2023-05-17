@@ -46,8 +46,6 @@ static Value clampDimToValidRange(OpBuilder &b, Location loc, Value clampVal,
     return b.create<AtenAddIntOp>(loc, dimSize, clampVal);
   } else if (clampInt == INT64_MAX) {
     return b.create<AtenSizeIntOp>(loc, tensor, dim);
-  } else if (clampInt == INT64_MIN) {
-    return b.create<ConstantIntOp>(loc, b.getI64IntegerAttr(0));
   }
   return clampVal;
 }
