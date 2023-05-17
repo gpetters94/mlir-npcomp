@@ -16,10 +16,41 @@
 #include "torch-mlir/Dialect/Torch/Transforms/Passes.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 #include <climits>
+#include <cstdint>
 
 using namespace mlir;
 using namespace mlir::torch;
 using namespace mlir::torch::Torch;
+
+// TODO Comparing directly to INT64_MAX/INT64_MIN seems fragile.
+// This is a potential general way of implementing the clamping in terms of
+// other torch ops. https://github.com/llvm/torch-mlir/pull/2005
+//
+// def to_valid_dim(dim, max_dim):
+//  dim = torch.ops.prim.min(dim, max_dim)
+//  dim = torch.ops.prim.max(dim, -max_dim)
+//  is_neg = torch.ops.aten.lt(dim, 0)
+//  is_neg_int = torch.ops.aten.Int.bool(is_neg)
+//  return (dim + max_dim) * is_neg_int + dim * (1 - is_neg_int)
+//
+// dim_size = torch.ops.aten.size.int(slice, slice.get_dim())
+// start = to_valid_dim(slice.get_start(), dim_size)
+// end = to_valid_dim(slice.get_end(), dim_size)
+//
+// Expect this to change to the above once op support is there.
+// The signature will also likely change.
+static Value clampDimToValidRange(OpBuilder &b, Location loc, Value clampVal,
+                                  int64_t clampInt, Value tensor, Value dim) {
+  if (clampInt < 0) {
+    Value dimSize = b.create<AtenSizeIntOp>(loc, tensor, dim);
+    return b.create<AtenAddIntOp>(loc, dimSize, clampVal);
+  } else if (clampInt == INT64_MAX) {
+    return b.create<AtenSizeIntOp>(loc, tensor, dim);
+  } else if (clampInt == INT64_MIN) {
+    return b.create<ConstantIntOp>(loc, b.getI64IntegerAttr(0));
+  }
+  return clampVal;
+}
 
 namespace {
 class RecomposeSliceCopy_ : public OpRewritePattern<AtenCopy_Op> {
@@ -36,53 +67,24 @@ public:
     int64_t dim;
     if (!matchPattern(sliceOp.getDim(), m_TorchConstantInt(&dim)))
       return failure();
-
-    // TODO Comparing directly to INT64_MAX/INT64_MIN seems fragile.
-    // This is a potential general way of implementing the clamping in terms of
-    // other torch ops. https://github.com/llvm/torch-mlir/pull/2005
-    //
-    // def to_valid_dim(dim, max_dim):
-    //  dim = torch.ops.prim.min(dim, max_dim)
-    //  dim = torch.ops.prim.max(dim, -max_dim)
-    //  is_neg = torch.ops.aten.lt(dim, 0)
-    //  is_neg_int = torch.ops.aten.Int.bool(is_neg)
-    //  return (dim + max_dim) * is_neg_int + dim * (1 - is_neg_int)
-    //
-    // dim_size = torch.ops.aten.size.int(slice, slice.get_dim())
-    // start = to_valid_dim(slice.get_start(), dim_size)
-    // end = to_valid_dim(slice.get_end(), dim_size)
-    int64_t end;
-    if (sliceOp.getEnd().getType().isa<Torch::NoneType>())
-      end = INT64_MAX;
-    else if (!matchPattern(sliceOp.getEnd(), m_TorchConstantInt(&end)))
-      return failure();
-    int64_t start;
+    int64_t startInt;
     if (sliceOp.getStart().getType().isa<Torch::NoneType>())
-      start = INT64_MIN;
-    else if (!matchPattern(sliceOp.getStart(), m_TorchConstantInt(&start)))
+      startInt = INT64_MIN;
+    else if (!matchPattern(sliceOp.getStart(), m_TorchConstantInt(&startInt)))
+      return failure();
+    int64_t endInt;
+    if (sliceOp.getEnd().getType().isa<Torch::NoneType>())
+      endInt = INT64_MAX;
+    else if (!matchPattern(sliceOp.getEnd(), m_TorchConstantInt(&endInt)))
       return failure();
 
-    Value newEnd = sliceOp.getEnd();
-    if (end < 0) {
-      Value dimSize = rewriter.create<AtenSizeIntOp>(
-          op.getLoc(), sliceOp.getSelf(), sliceOp.getDim());
-      newEnd =
-          rewriter.create<AtenAddIntOp>(op.getLoc(), dimSize, sliceOp.getEnd());
-    } else if (end == INT64_MAX) {
-      newEnd = rewriter.create<AtenSizeIntOp>(op.getLoc(), sliceOp.getSelf(),
-                                              sliceOp.getDim());
-    }
-
-    Value newStart = sliceOp.getStart();
-    if (start == INT64_MIN) {
-      newStart = rewriter.create<ConstantIntOp>(op.getLoc(),
-                                                rewriter.getI64IntegerAttr(0));
-    } else if (start < 0) {
-      Value dimSize = rewriter.create<AtenSizeIntOp>(
-          op.getLoc(), sliceOp.getSelf(), sliceOp.getDim());
-      newStart =
-          rewriter.create<AtenAddIntOp>(op.getLoc(), dimSize, sliceOp.getEnd());
-    }
+    // Clamp indices to the tensor's size
+    Value start =
+        clampDimToValidRange(rewriter, op.getLoc(), sliceOp.getStart(),
+                             startInt, sliceOp.getSelf(), sliceOp.getDim());
+    Value end =
+        clampDimToValidRange(rewriter, op.getLoc(), sliceOp.getEnd(), endInt,
+                             sliceOp.getSelf(), sliceOp.getDim());
 
     Value noneVal = rewriter.create<ConstantNoneOp>(op.getLoc());
     Value falseVal = rewriter.create<ConstantBoolOp>(op.getLoc(), false);
@@ -90,7 +92,7 @@ public:
     // Create IndexPut_Op
     BaseTensorType tensorType = op->getResultTypes()[0].cast<BaseTensorType>();
     Value range = rewriter.create<AtenArangeStartStepOp>(
-        op.getLoc(), tensorType, newStart, newEnd, sliceOp.getStep(),
+        op.getLoc(), tensorType, start, end, sliceOp.getStep(),
         /*dtype=*/noneVal, /*layout=*/noneVal, /*device=*/noneVal,
         /*pin_memory=*/noneVal);
 
